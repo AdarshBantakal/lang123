@@ -9,7 +9,62 @@ from transcription import transcribe
 from pronunciation import assess
 
 app = Flask(__name__)
-CORS(app)
+
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+
+if APP_ENV not in ("development", "production"):
+    raise RuntimeError(
+        "APP_ENV must be either 'development' or 'production'"
+    )
+# to use less audio file size , max size 14 MB defined  
+try:
+    MAX_REQUEST_BYTES = int(
+        os.getenv("MAX_REQUEST_BYTES", str(14 * 1024 * 1024))
+    )
+except ValueError as error:
+    raise RuntimeError(
+        "MAX_REQUEST_BYTES must be a positive integer"
+    ) from error
+
+if MAX_REQUEST_BYTES <= 0:
+    raise RuntimeError(
+        "MAX_REQUEST_BYTES must be a positive integer"
+    )
+
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+
+configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+
+if APP_ENV == "production" and not configured_origins.strip():
+    raise RuntimeError(
+        "CORS_ALLOWED_ORIGINS must be configured in production"
+    )
+    # Default local development URLs for Vite/React
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in configured_origins.split(",")
+    if origin.strip()
+]
+
+if APP_ENV == "development" and not allowed_origins:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": allowed_origins,
+            "methods": ["GET", "HEAD", "POST", "OPTIONS"],
+            "allow_headers": [
+                "Content-Type",
+                "Bypass-Tunnel-Reminder",
+            ],
+        }
+    },
+)
 
 LANGUAGE_CODES = {
     "kannada": "kn",
@@ -184,6 +239,9 @@ def text_to_speech():
 def health():
     return jsonify({'status': 'ok', 'service': 'langbridge-speech-service'})
 
+@app.errorhandler(413)
+def request_too_large(error):
+    return jsonify({"error": "Your Request is too large"}), 413
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
