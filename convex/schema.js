@@ -10,6 +10,7 @@ export default defineSchema({
     xp: v.number(),
     totalXp: v.optional(v.number()),        // Default: 0
     streak: v.optional(v.number()),         // Default: 0
+    maxStreak: v.optional(v.number()),      // All-time highest streak
     lastPracticeDate: v.optional(v.number()),
     onboardingCompleted: v.optional(v.boolean()), // Default: false
     reminderTime: v.optional(v.string()),  
@@ -19,8 +20,13 @@ export default defineSchema({
     dailyXpDate: v.optional(v.string()),    // "YYYY-MM-DD" the dailyXp belongs to
     gems: v.optional(v.number()),           // Default: 0
     streakFreezes: v.optional(v.number()),  // Default: 0
-    equippedBorder: v.optional(v.string()), // ID of the animated border
+    equippedBorder: v.optional(v.string()), // ID of the animated avatar frame/border
     unlockedBorders: v.optional(v.array(v.string())), // Array of border IDs owned
+    equippedBanner: v.optional(v.string()), // ID of the animated profile banner
+    unlockedBanners: v.optional(v.array(v.string())), // Array of banner IDs owned
+    avatarStorageId: v.optional(v.string()), // Convex storageId for custom uploaded profile picture
+    avatarUrl: v.optional(v.string()),       // Direct resolved URL for profile picture
+    bestLanguage: v.optional(v.string()),    // User's featured/best language
   }).index("by_totalXp", ["totalXp"]),
 
   lessons: defineTable({
@@ -35,8 +41,19 @@ export default defineSchema({
     order: v.optional(v.number()),      // Path ordering
     unit: v.optional(v.number()),       // Unit grouping
     topic: v.optional(v.string()),      // Name of the unit
+    // Hierarchical Branching Phrase Tree fields:
+    nodeKey: v.optional(v.string()),    // Unique stable phrase identifier (e.g. kn_greet_root_01)
+    parentKey: v.optional(v.string()),  // Parent phrase key (null/undefined for root phrases)
+    parentId: v.optional(v.id("lessons")), // Direct DB parent reference if linked
+    categoryId: v.optional(v.string()), // Category ID (e.g. "greetings", "food", etc.)
+    level: v.optional(v.number()),      // 0 = root, 1 = branch response, 2 = follow-up, 3 = nuance
+    meaning: v.optional(v.string()),    // English translation/meaning
+    context: v.optional(v.string()),    // Contextual usage and explanation
+    contentReviewStatus: v.optional(v.string()), // "verified" | "awaiting_review"
   }).index("by_language", ["language"])
-    .index("by_language_order", ["language", "order"]),
+    .index("by_language_order", ["language", "order"])
+    .index("by_language_category", ["language", "categoryId"])
+    .index("by_nodeKey", ["nodeKey"]),
 
   assessments: defineTable({
     userId: v.id("users"),
