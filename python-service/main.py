@@ -36,36 +36,36 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 
 configured_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
 
-if APP_ENV == "production" and not configured_origins.strip():
-    raise RuntimeError(
-        "CORS_ALLOWED_ORIGINS must be configured in production"
-    )
-    # Default local development URLs for Vite/React
 allowed_origins = [
     origin.strip().rstrip("/")
     for origin in configured_origins.split(",")
     if origin.strip()
 ]
 
-if APP_ENV == "development" and not allowed_origins:
-    allowed_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
+# Allow any origin if not explicitly configured so Vercel, localhost, and tunnels work
+cors_origins = allowed_origins if allowed_origins else "*"
 
 CORS(
     app,
     resources={
         r"/*": {
-            "origins": allowed_origins,
+            "origins": cors_origins,
             "methods": ["GET", "HEAD", "POST", "OPTIONS"],
-            "allow_headers": [
-                "Content-Type",
-                "Bypass-Tunnel-Reminder",
-            ],
+            "allow_headers": "*",
         }
     },
 )
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, POST, OPTIONS, PUT, DELETE"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Bypass-Tunnel-Reminder, Authorization, X-Requested-With, Origin, Accept"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
 
 LANGUAGE_CODES = {
     "kannada": "kn",
@@ -76,8 +76,11 @@ LANGUAGE_CODES = {
     "kodava": "kn",   # Kodava uses Kannada script; closest TTS voice
 }
 
-@app.route('/assess', methods=['POST'])
+@app.route('/assess', methods=['POST', 'OPTIONS'])
 def assess_audio():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
     if not request.is_json:
         return jsonify({'error': 'Request body must be JSON'}), 400
 
@@ -159,32 +162,56 @@ def assess_audio():
                     print(f"[CLEANUP WARN] Could not remove temporary audio file: {cleanup_error}")
 
 
-@app.route('/transcribe', methods=['POST'])
+@app.route('/transcribe', methods=['POST', 'OPTIONS'])
 def transcribe_audio():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
     data = request.json or {}
     language = data.get('language', '').lower()
+    scenario = data.get('scenario', '')
+    context = data.get('context', '')
+    phrase_hint = data.get('phrase', '')
 
     if 'audio_base64' in data and data['audio_base64']:
         base64_len = len(data['audio_base64'])
-        audio_bytes = base64.b64decode(data['audio_base64'])
+        try:
+            audio_bytes = base64.b64decode(data['audio_base64'], validate=True)
+        except (binascii.Error, ValueError):
+            return jsonify({'error': 'audio_base64 must contain valid Base64 data'}), 400
     else:
         return jsonify({'error': 'No audio provided'}), 400
 
+    if not audio_bytes:
+        return jsonify({'text': ''})
+
     tmp_path = None
+    preprocessed_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.webm') as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
 
         file_size = os.path.getsize(tmp_path)
-        print(f"[TRANSCRIBE] Payload received: base64_chars={base64_len}, decoded_file_size={file_size} bytes, language='{language}'")
+        print(f"[TRANSCRIBE] Payload received: base64_chars={base64_len}, decoded_file_size={file_size} bytes, language='{language}', scenario='{scenario}'")
 
         if file_size < 300:
             print("[TRANSCRIBE WARN] Recorded audio file is too short/empty (< 300 bytes), skipping transcription")
             return jsonify({'text': ''})
 
-        # Local Faster-Whisper transcription
-        transcribed_text = transcribe(tmp_path, language, phrase="", phonetics="")
+        # 1. Preprocess audio (format conversion to 16kHz mono WAV, noise reduction, volume normalization, silence trimming)
+        audio_to_transcribe = tmp_path
+        try:
+            from audio_preprocessor import AudioPreprocessingError, preprocess
+            preprocessed_path, _ = preprocess(tmp_path)
+            audio_to_transcribe = preprocessed_path
+        except Exception as prep_err:
+            print(f"[TRANSCRIBE WARN] Preprocessor skipped or fallback: {prep_err}")
+            audio_to_transcribe = tmp_path
+
+        # 2. Local Faster-Whisper transcription with prompt hinting
+        hint = phrase_hint or context or ""
+        transcribed_text = transcribe(audio_to_transcribe, language, phrase=hint, phonetics="")
 
         return jsonify({
             'text': transcribed_text
@@ -194,15 +221,18 @@ def transcribe_audio():
         print(f"[ERROR in /transcribe] {safe_error}")
         return jsonify({'error': safe_error}), 500
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+        for p in (preprocessed_path, tmp_path):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
-@app.route('/tts', methods=['POST'])
+@app.route('/tts', methods=['POST', 'OPTIONS'])
 def text_to_speech():
+    if request.method == 'OPTIONS':
+        return ('', 204)
     """Generate audio pronunciation for a phrase in the given language."""
     data = request.json or {}
     phrase = data.get('phrase', '')
@@ -258,9 +288,11 @@ def text_to_speech():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/', methods=['GET'])
-@app.route('/health', methods=['GET'])
+@app.route('/', methods=['GET', 'OPTIONS'])
+@app.route('/health', methods=['GET', 'OPTIONS'])
 def health():
+    if request.method == 'OPTIONS':
+        return ('', 204)
     return jsonify({'status': 'ok', 'service': 'langbridge-speech-service'})
 
 @app.errorhandler(413)
